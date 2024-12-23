@@ -1,0 +1,9 @@
+masters/lib/
+masters/bin/
+masters/pyvenv.cfg
+masters/share/jupyter/kernels/python3/kernel.json
+masters/share/jupyter/kernels/python3/logo-32x32.png
+masters/share/jupyter/kernels/python3/logo-64x64.png
+masters/share/jupyter/kernels/python3/logo-svg.svg
+masters/share/man/man1/ipython.1
+masters/share/man/man1/ttx.1
