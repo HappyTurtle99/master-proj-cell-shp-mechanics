@@ -1,5 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
+import scipy.integrate as sint
 from scipy.integrate import solve_bvp
 from scipy.interpolate import interp1d
 from scipy.interpolate import CubicSpline
@@ -10,16 +11,23 @@ def ds(curve, index):
         return np.linalg.norm(curve[0] - curve[-1])
     return np.linalg.norm(curve[index + 1] - curve[index])
 
+#gives outward pointing normals (using central diff)
 def unit_normals(curve):
     out = np.zeros((len(curve), 2))
-    for i in range(len(curve)-1):
-        gradient = (curve[i + 1] - curve[i])
+    for i in range(1, len(curve)-1):
+        gradient = (curve[i + 1] - curve[i-1])
         gradient = gradient / np.linalg.norm(gradient)
         out[i] = np.array([-gradient[1], gradient[0]])
-    gradient = (curve[0] - curve[-1])
+
+    gradient = (curve[0] - curve[-2])
     gradient = gradient / np.linalg.norm(gradient)
     out[-1] = np.array([-gradient[1], gradient[0]])
-    return out
+
+    gradient = (curve[1] - curve[-1])
+    gradient = gradient / np.linalg.norm(gradient)
+    out[0] = np.array([-gradient[1], gradient[0]])
+
+    return -out
 
 #returns g11
 def metric(curve, index, step_theta):
@@ -91,18 +99,50 @@ def populate_matrix(curve, step_theta, vdisps):
                 temp = curve.copy()
                 #using central difference for this derivative as otherwise it would be 0
                 temp[(j - 1)% len(curve)] = temp[(j - 1)% len(curve)] + vdisp
-                dg = 0.5 * ( metric(temp, (j-2)% len(curve), step_theta) - metric(curve, (j-2)% len(curve), step_theta))
+                dg = 0.5 * (metric(temp, (j-2)% len(curve), step_theta) - metric(curve, (j-2)% len(curve), step_theta))
                 dkappa = curvature(temp, j) - curvature(curve, j)
             
             kappa = curvature(curve, j)
 
             #this is fine at first order
             entry1 = dg / 2
+            
             entry2 = -dg * kappa / 2 - dkappa
 
             out[i, 2 * j] = entry1 * ds(curve, j)
             out[i, 2 * j + 1] = entry2 * ds(curve, j)
     return out
+
+#populates matrix not sparsely that is each displacement displaces all points
+#so each row is full. The reason it is called hack is it is a shortcut and it is
+#correct only for first order it approximates dg(vdisp1+vdisp2) = dg(vdisp1) + dg(vdisp2)
+def populate_matrix_set_hack(curve, p=1, prec=1e-9):
+    matrix = np.zeros((2 * len(curve), 2 * len(curve)))
+    rhs = np.zeros(2 * len(curve))
+    fns = p * np.ones(len(curve)) #normal forces
+
+    L = np.sum([ds(curve, i) for i in range(len(curve))])
+
+    for i in range(len(curve) * 2):
+        #in testing we will see what this does for convergence
+        extra_factor = 1
+
+        step_theta = L / len(curve)
+
+        epsilon = step_theta * prec
+        vdisps = np.random.rand(2 * len(curve), 2)
+        vdisps = vdisps / np.linalg.norm(vdisps, axis=1)[:, np.newaxis]
+        vdisps = vdisps * epsilon
+
+        A = populate_matrix(curve, step_theta, vdisps)
+
+        matrix[i] = np.sum(A[0::2], axis=0)
+        
+        rhs[i] = 0
+        for j in range(len(curve)):
+            rhs[i] += -np.dot(unit_normals(curve)[j], vdisps[j * 2]) * ds(curve, j) * fns[j]
+
+    return matrix, rhs
 
 #rhs of an equation such as Ax = b
 #for now only works for forces in the perp direction
@@ -116,30 +156,35 @@ def populate_rhs(curve, forces_perp, vdisps):
             forces_index += 1
     return out
 
-#prec is the ratio of virtual displacement size to step size in the curve
-def backward_solver(curve, L, N, prec):
 
-    curve_copy = augment_curve(curve, N).copy()
+#prec is the ratio of virtual displacement size to step size in the curve
+#pts displaced is the parameter which determines how the matrix is populated
+#in other words the what sets of displacements are taken.
+#- '1' means to use populate_matrix()
+#- '2' means to use populate_matrix_set_hack()
+#- '3' means to use populate_matrix_set() (not implemented)
+def backward_solver(curve, L, N, population_method='1', prec=1e-9, p=1):
+
+    curve_copy = curve.copy()
+    curve_copy = np.vstack([curve_copy, curve_copy[0]])
+    curve_copy = augment_curve(curve_copy, N)
 
     step_theta = L / N
 
     #generate vdisps
     epsilon = step_theta * prec
-    vdisps = np.zeros((2 * len(curve_copy), 2))
-    vdisps = np.random.rand(2 * len(curve_copy), 2)
+    vdisps = np.random.rand(2 * len(curve_copy), 2) - 0.5
     vdisps = vdisps / np.linalg.norm(vdisps, axis=1)[:, np.newaxis]
-    # vdisps[0::2, 0] = 1  # Set every second element's y-component to 1
-    # vdisps[1::2, 1] = 1  # Set every second element's x-component to 1
     vdisps = vdisps * epsilon
 
-    #external force densities
-    p = 1 * np.ones(N)#np.sin(2 * thetas) 
-    ps = np.array([p, p]).T
-    forces_perp = ps * unit_normals(curve_copy)
+    #external force densities    
+    forces_perp = p * unit_normals(curve_copy)
 
-    # forces_perp = curve * p / R
-    A = populate_matrix(curve_copy, step_theta, vdisps)
-    b = populate_rhs(curve_copy, forces_perp, vdisps)
+    if population_method == '1':
+        A = populate_matrix(curve_copy, step_theta, vdisps)
+        b = populate_rhs(curve_copy, forces_perp, vdisps)
+    elif population_method == '2':
+        A, b = populate_matrix_set_hack(curve_copy, p, prec)
 
     #solve the system
     x = np.linalg.solve(A, b)
@@ -149,11 +194,13 @@ def backward_solver(curve, L, N, prec):
     
     return sigmas, ms
 
-#note: the curve input must be such that the first and last points are the same
-#for it to work well
-def augment_curve(curve, N):
+#feed only curves which are closed under whatever error threshold
+# you are willing to accept from the backward solver -- see * lines below
+def augment_curve_edit(curve, N):
+
     # Original array of points
-    points = curve
+    points = curve[:-1] #*
+    points = np.vstack([points, points[0]]) #*
     x = points[:, 0]
     y = points[:, 1]
 
@@ -165,7 +212,8 @@ def augment_curve(curve, N):
     interp_func_x = CubicSpline(cumulative_dist, x, bc_type='periodic')
     interp_func_y = CubicSpline(cumulative_dist, y, bc_type='periodic')
 
-    # Generate new evenly spaced cumulative distances
+    # Here we use N+1 because the above use of 'bc_type=periodic' requires we feed
+    #in a closed curve, and so really we are interpolating 
     new_cumulative_dist = np.linspace(cumulative_dist[0], cumulative_dist[-1], N+1)
 
     # Interpolated x and y
@@ -174,7 +222,7 @@ def augment_curve(curve, N):
 
     # Interpolated points
     interpolated_points = np.vstack((x_new, y_new)).T
-    return interpolated_points[:-1]
+    return interpolated_points[-1]
 
 def interpolate_curve(curve):
     N = len(curve)
@@ -201,7 +249,7 @@ def interpolate_seq_periodic(seq):
     interp_func = CubicSpline(x, seq, bc_type='periodic')
     return interp_func
 
-def forward_solver(mag=0.6, tns=None):
+def forward_solver(num_pts, mag=0.6, tns=None):
     """
     Curve forward solver for input pressure + normal forces
     """
@@ -211,13 +259,13 @@ def forward_solver(mag=0.6, tns=None):
     L_initial = 2 * np.pi  # Initial guess for length
 
     # Solution domain
-    xmesh = np.linspace(0, 1, len(tns) if tns is not None else 200)
+    xmesh = np.linspace(0, 1, len(tns) if tns is not None else num_pts)
 
     # SETTING NORMAL FORCE PROFILE
     # Random tn profile
-    NrModes = 3  # How many Fourier modes should be included
+    NrModes = 1  # How many Fourier modes should be included
     Nmax = 5  # Maximal mode number to draw from (Nmax >= NrModes)
-    N = np.random.choice(range(1, Nmax + 1), NrModes, replace=False)  # Set of modes
+    N = np.random.choice(range(2, Nmax + 1), NrModes, replace=False)  # Set of modes
     Magnc = mag * (np.random.rand(NrModes) - 0.5)  # Magnitudes of cosine modes
     Magns = mag * (np.random.rand(NrModes) - 0.5)  # Magnitudes of sine modes
 
@@ -292,16 +340,22 @@ def forward_solver(mag=0.6, tns=None):
     plt.plot(sol.x, sol.y[1], linewidth=2)
     plt.title('Tension')
 
-    # Psi plot
+    # Normal moment plot
+    ms = sint.cumulative_trapezoid(tn(sol.x), dx=sol.y[4, 0]/len(sol.y[1]))
     plt.subplot(2, 2, 3)
+    plt.plot(sol.x[:len(ms)], ms, linewidth=2)
+    plt.title('ms')
+
+    # Psi plot
+    plt.subplot(2, 2, 4)
     plt.plot(sol.x, sol.y[0], linewidth=2)
     plt.title('Psi')
 
-    # Curvature plot
-    kappa = ((sol.y[4, 0] * p + dtn(sol.x)) / sol.y[1]) / sol.y[4, 0]
-    plt.subplot(2, 2, 4)
-    plt.plot(sol.x, kappa, linewidth=2)
-    plt.title('Curvature')
+    # # Curvature plot
+    # kappa = ((sol.y[4, 0] * p + dtn(sol.x)) / sol.y[1]) / sol.y[4, 0]
+    # plt.subplot(2, 2, 5)
+    # plt.plot(sol.x, kappa, linewidth=2)
+    # plt.title('Curvature')
 
     plt.tight_layout()
     plt.show()
