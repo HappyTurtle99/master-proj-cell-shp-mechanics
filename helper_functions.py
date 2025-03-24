@@ -8,12 +8,11 @@ from scipy.interpolate import CubicSpline
 """
 Main functions for initial iteration
 """
-
 def ds(curve, index):
     if index == len(curve) - 1:
         return np.linalg.norm(curve[0] - curve[-1])
     return np.linalg.norm(curve[index + 1] - curve[index])
-
+ 
 #gives outward pointing normals (using central diff)
 def unit_normals(curve):
     out = np.zeros((len(curve), 2))
@@ -56,14 +55,17 @@ def curvature(curve, index):
         gradient1 = gradient1 / np.linalg.norm(gradient1)
         gradient2 = (curve[-1] - curve[-2])
         gradient2 = gradient2 / np.linalg.norm(gradient2)
-        return np.linalg.norm(gradient1 - gradient2) / ds(curve, index)    
+        cross = -np.cross(np.append(gradient1, 0), np.append(gradient2, 0))
+
+        return np.sign(cross[2]) * np.linalg.norm(gradient1 - gradient2) / ds(curve, index)    
     if index == 0:
         gradient1 = (curve[1] - curve[0])
         gradient1 = gradient1 / np.linalg.norm(gradient1)
         gradient2 = (curve[0] - curve[-1])
         gradient2 = gradient2 / np.linalg.norm(gradient2)
+        cross = np.cross(np.append(gradient1, 0), np.append(gradient2, 0))
 
-        return np.linalg.norm(gradient1 - gradient2) / ds(curve, index)
+        return -np.sign(cross[2]) * np.linalg.norm(gradient1 - gradient2) / ds(curve, index)
 
     gradient1 = (curve[index + 1] - curve[index])
     gradient1 = gradient1 / np.linalg.norm(gradient1)
@@ -75,7 +77,7 @@ def curvature(curve, index):
 
     cross = np.cross(np.append(gradient1, 0), np.append(gradient2, 0))
 
-    return np.sign(cross[2])* np.linalg.norm(gradient1 - gradient2) / ds(curve, index)
+    return -np.sign(cross[2]) * np.linalg.norm(gradient1 - gradient2) / ds(curve, index)
 
 #note vdisps has shape (2 * number of points, 2)
 # eg vdisps[0:2] = [vdisp_parallel at position 1, vdisp perp at position 1]
